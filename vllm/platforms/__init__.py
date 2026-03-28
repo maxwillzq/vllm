@@ -36,10 +36,16 @@ def vllm_version_matches_substr(substr: str) -> bool:
 def tpu_platform_plugin() -> str | None:
     logger.debug("Checking if TPU platform is available.")
 
+    # Force TPU platform if export path is set (to enable export on CPU)
+    if os.environ.get("GOOGLE_EXPORT_MODEL_PATH"):
+        logger.debug("Confirmed TPU platform is active via GOOGLE_EXPORT_MODEL_PATH.")
+        return "tpu_inference.platforms.tpu_platform.TpuPlatform"
+
     # Check for Pathways TPU proxy
     if envs.VLLM_TPU_USING_PATHWAYS:
         logger.debug("Confirmed TPU platform is available via Pathways proxy.")
         return "tpu_inference.platforms.tpu_platform.TpuPlatform"
+
 
     # Check for libtpu installation
     try:
@@ -210,7 +216,27 @@ builtin_platform_plugins = {
 }
 
 
+def _parse_topology_to_device_count(topology_name: str) -> int:
+    import re
+    # vlp_AxB -> A * B
+    if "vlp" in topology_name:
+        parts = topology_name.split("_")
+        if len(parts) >= 2:
+            dims = parts[-1].split("x")
+            if len(dims) == 2:
+                try:
+                    return int(dims[0]) * int(dims[1])
+                except ValueError:
+                    pass
+    # v5e-A -> A
+    match = re.search(r'[-_](\d+)$', topology_name)
+    if match:
+        return int(match.group(1))
+    return 1
+
+
 def resolve_current_platform_cls_qualname() -> str:
+
     platform_plugins = load_plugins_by_group(PLATFORM_PLUGINS_GROUP)
 
     activated_plugins = []
@@ -224,9 +250,23 @@ def resolve_current_platform_cls_qualname() -> str:
         except Exception:
             pass
 
+    if os.environ.get("GOOGLE_EXPORT_MODEL_PATH") and "tpu" in activated_plugins:
+        # Keep only "tpu" plugin to avoid conflicts with CPU/GPU on export nodes
+        logger.debug("Overriding active platforms to only use 'tpu' due to GOOGLE_EXPORT_MODEL_PATH.")
+        activated_plugins = ["tpu"]
+
+        # Set XLA_FLAGS to simulate the correct number of devices on CPU
+        topology_name = os.environ.get("GOOGLE_EXPORT_TOPOLOGY", "vlp_1x1")
+        device_count = _parse_topology_to_device_count(topology_name)
+        if "XLA_FLAGS" not in os.environ:
+            os.environ["XLA_FLAGS"] = f"--xla_force_host_platform_device_count={device_count}"
+        logger.info(f"Setting XLA_FLAGS={os.environ['XLA_FLAGS']} for CPU export of {topology_name}.")
+
+
     activated_builtin_plugins = list(
         set(activated_plugins) & set(builtin_platform_plugins.keys())
     )
+
     activated_oot_plugins = list(set(activated_plugins) & set(platform_plugins.keys()))
 
     if len(activated_oot_plugins) >= 2:
