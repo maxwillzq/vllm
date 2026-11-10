@@ -261,7 +261,7 @@ impl AppState {
     }
 
     /// The [`EngineCoreLlm`] under the chat facade, if that is what it runs.
-    fn engine_core_llm(&self) -> Option<&EngineCoreLlm> {
+    pub(crate) fn engine_core_llm(&self) -> Option<&EngineCoreLlm> {
         (self.llm() as &dyn Any).downcast_ref()
     }
 
@@ -270,8 +270,8 @@ impl AppState {
     ///
     /// # Panics
     ///
-    /// Panics if the server does not run an [`EngineCoreLlm`], which cannot
-    /// happen yet: the server always builds its state around one.
+    /// Panics if the server does not run an [`EngineCoreLlm`]. Only routes the
+    /// router registers for an `EngineCoreLlm` call it.
     pub(crate) fn engine_core_client(&self) -> &EngineCoreClient {
         (self.engine_core_llm().expect("the server runs an `EngineCoreLlm`")).engine_core_client()
     }

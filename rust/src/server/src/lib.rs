@@ -25,7 +25,7 @@ use std::future::Future;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
-use anyhow::{Context as _, Result};
+use anyhow::{Context as _, Result, bail};
 use axum::Router;
 use axum::body::Body;
 use axum::extract::ConnectInfo;
@@ -56,7 +56,7 @@ pub use vllm_chat::{
     ChatTemplateContentFormatOption, GenerationConfigMode, ParserSelection, RendererSelection,
 };
 use vllm_engine_core_client::{EngineCoreClient, EngineCoreClientConfig};
-use vllm_llm::EngineCoreLlm;
+use vllm_llm::{EngineCoreLlm, Llm};
 pub use vllm_metrics::CustomHistogramBuckets;
 use vllm_metrics::METRICS;
 use vllm_text::TextLlm;
@@ -95,29 +95,9 @@ async fn build_state(config: &Config) -> Result<Arc<AppState>> {
     let metrics_model_name = served_model_names[0].clone();
 
     // Load both backends from the same model metadata so they stay in sync.
-    let loaded = load_model_backends(
-        &config.model,
-        LoadModelBackendsOptions {
-            revision: config.revision.clone(),
-            tokenizer: config.tokenizer.clone(),
-            hf_config: config.hf_config.clone(),
-            skip_tokenizer_init: config.skip_tokenizer_init,
-            hf_overrides: config.hf_overrides.clone(),
-            generation_config: config.generation_config,
-            renderer: config.renderer,
-            language_model_only: config.language_model_only,
-            chat_template: config.chat_template.clone(),
-            trust_request_chat_template: config.trust_request_chat_template,
-            chat_template_content_format: config.chat_template_content_format,
-            default_chat_template_kwargs: config
-                .default_chat_template_kwargs
-                .clone()
-                .unwrap_or_default(),
-            limit_mm_per_prompt: config.limit_mm_per_prompt.clone(),
-        },
-    )
-    .await
-    .context("failed to create chat/text backends")?;
+    let loaded = load_model_backends(&config.model, load_model_backends_options(config))
+        .await
+        .context("failed to create chat/text backends")?;
     let text_backend = loaded.text_backend;
     let chat_backend = loaded.chat_backend;
 
@@ -147,6 +127,94 @@ async fn build_state(config: &Config) -> Result<Arc<AppState>> {
         .with_log_stats(config.log_stats_interval.filter(|_| !config.disable_log_stats))
         .with_request_id_randomization(!config.disable_request_id_randomization)
         .with_stream_interval(config.stream_interval);
+    let state = build_app_state(
+        config,
+        llm,
+        text_backend,
+        chat_backend,
+        metrics_model_name,
+        served_model_names,
+        server_info,
+        system_fingerprint,
+    );
+
+    // Load operator-configured static LoRA adapters before serving, failing
+    // startup on any error like Python's `init_static_loras` does.
+    load_static_loras(&state, &config.lora_modules).await?;
+
+    Ok(state)
+}
+
+/// Build the shared application state for one configured model around an
+/// [`Llm`] supplied by the caller instead of an engine-core connection.
+///
+/// The server then runs only the routes that need no engine-core access:
+/// health, metrics, models, completions, chat completions, responses and
+/// tokenization. Engine-core-only options are rejected up front.
+async fn build_state_with_llm(config: &Config, llm: impl Llm) -> Result<Arc<AppState>> {
+    if config.grpc_listener_mode.is_some() {
+        bail!("the gRPC server needs an engine-core connection; serve_with_llm runs without one");
+    }
+    if !config.lora_modules.is_empty() {
+        bail!(
+            "static LoRA adapters need an engine-core connection; serve_with_llm runs without one"
+        );
+    }
+    METRICS.set_custom_histogram_buckets(config.custom_histogram_buckets.clone());
+    let served_model_names = effective_served_model_names(&config.model, &config.served_model_name);
+    let metrics_model_name = served_model_names[0].clone();
+    let loaded = load_model_backends(&config.model, load_model_backends_options(config))
+        .await
+        .context("failed to create chat/text backends")?;
+    let server_info = ServerInfoSnapshot::without_engine(config);
+    let system_fingerprint = config.fingerprint_mode.fingerprint_without_engine();
+    Ok(build_app_state(
+        config,
+        llm,
+        loaded.text_backend,
+        loaded.chat_backend,
+        metrics_model_name,
+        served_model_names,
+        server_info,
+        system_fingerprint,
+    ))
+}
+
+/// The backend loading options `config` selects.
+fn load_model_backends_options(config: &Config) -> LoadModelBackendsOptions {
+    LoadModelBackendsOptions {
+        revision: config.revision.clone(),
+        tokenizer: config.tokenizer.clone(),
+        hf_config: config.hf_config.clone(),
+        skip_tokenizer_init: config.skip_tokenizer_init,
+        hf_overrides: config.hf_overrides.clone(),
+        generation_config: config.generation_config,
+        renderer: config.renderer,
+        language_model_only: config.language_model_only,
+        chat_template: config.chat_template.clone(),
+        trust_request_chat_template: config.trust_request_chat_template,
+        chat_template_content_format: config.chat_template_content_format,
+        default_chat_template_kwargs: config
+            .default_chat_template_kwargs
+            .clone()
+            .unwrap_or_default(),
+        limit_mm_per_prompt: config.limit_mm_per_prompt.clone(),
+    }
+}
+
+/// Stack the text and chat facades on `llm` and wrap them in the application
+/// state.
+#[allow(clippy::too_many_arguments)]
+fn build_app_state(
+    config: &Config,
+    llm: impl Llm,
+    text_backend: vllm_text::DynTextBackend,
+    chat_backend: vllm_chat::DynChatBackend,
+    metrics_model_name: String,
+    served_model_names: Vec<String>,
+    server_info: ServerInfoSnapshot,
+    system_fingerprint: Option<String>,
+) -> Arc<AppState> {
     let text = TextLlm::new(llm, text_backend)
         .with_served_model_name(metrics_model_name)
         .with_max_logprobs(config.max_logprobs)
@@ -165,7 +233,7 @@ async fn build_state(config: &Config) -> Result<Arc<AppState>> {
         )
         .with_exclude_tools_when_tool_choice_none(config.exclude_tools_when_tool_choice_none);
 
-    let state = Arc::new(
+    Arc::new(
         AppState::new(served_model_names, chat)
             .with_model_path(config.model.clone())
             .with_api_server_options(config.api_server_options)
@@ -175,13 +243,7 @@ async fn build_state(config: &Config) -> Result<Arc<AppState>> {
             .with_cors(config.cors.clone())
             .with_access_log(config.access_log.clone())
             .with_profiler(config.profiler.clone()),
-    );
-
-    // Load operator-configured static LoRA adapters before serving, failing
-    // startup on any error like Python's `init_static_loras` does.
-    load_static_loras(&state, &config.lora_modules).await?;
-
-    Ok(state)
+    )
 }
 
 async fn load_static_loras(state: &AppState, modules: &[LoraModulePath]) -> Result<()> {
@@ -223,6 +285,46 @@ pub async fn serve_with_router_extension<F>(
 where
     F: FnOnce(Router) -> Router,
 {
+    serve_state::<EngineCoreLlm, F>(config, shutdown, extend_router, None).await
+}
+
+/// Run the OpenAI-compatible HTTP server over a caller-supplied [`Llm`]
+/// instead of an engine-core connection, until `shutdown` is cancelled.
+///
+/// `config.transport_mode` and `config.coordinator_mode` are not used. The
+/// tokenizer, chat template and model config still load from `config.model`
+/// (or `config.tokenizer` / `config.hf_config`), so a local directory laid
+/// out like a Hugging Face model works without network access.
+///
+/// Only routes that need no engine-core access are served: health, metrics,
+/// models, completions, chat completions, responses and tokenization. gRPC
+/// and static LoRA adapters need engine-core and are rejected; the dev-mode,
+/// runtime-LoRA, profiler, checkpoint and KV-event routes are not registered.
+/// `extend_router` can merge routes of the caller's own.
+pub async fn serve_with_llm<L, F>(
+    config: Config,
+    llm: L,
+    shutdown: CancellationToken,
+    extend_router: F,
+) -> Result<()>
+where
+    L: Llm,
+    F: FnOnce(Router) -> Router,
+{
+    serve_state(config, shutdown, extend_router, Some(llm)).await
+}
+
+/// Serve over `llm`, or over an engine-core connection when it is `None`.
+async fn serve_state<L, F>(
+    config: Config,
+    shutdown: CancellationToken,
+    extend_router: F,
+    llm: Option<L>,
+) -> Result<()>
+where
+    L: Llm,
+    F: FnOnce(Router) -> Router,
+{
     config.validate().context("invalid OpenAI frontend configuration")?;
 
     // Build the TLS server config once, up front, so a bad cert/key fails fast
@@ -237,7 +339,12 @@ where
     // Also check shutdown during the (potentially long) startup handshake and
     // static LoRA loading.
     let state = tokio::select! {
-        result = build_state(&config) => result?,
+        result = async {
+            match llm {
+                None => build_state(&config).await,
+                Some(llm) => build_state_with_llm(&config, llm).await,
+            }
+        } => result?,
         _ = shutdown.cancelled() => return Ok(()),
     };
     let model = state.primary_model_name().to_owned();

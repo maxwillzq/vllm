@@ -40,6 +40,18 @@ impl ServerInfoSnapshot {
         }
     }
 
+    /// Snapshot for a server that runs a caller-supplied `Llm` with no
+    /// engine-core connection: it reports no engine `VllmConfig`.
+    pub(crate) fn without_engine(config: &Config) -> Self {
+        Self {
+            vllm_config: None,
+            rust_frontend_config: serde_json::to_value(config)
+                .expect("server info value must serialize"),
+            vllm_env: collect_vllm_env(),
+            system_env: collect_system_env(),
+        }
+    }
+
     pub(crate) fn response(&self, config_format: ServerInfoConfigFormat) -> Value {
         let render = |config: &Value| match config_format {
             ServerInfoConfigFormat::Text => Value::String(render_config_text(config)),

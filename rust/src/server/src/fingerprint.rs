@@ -27,6 +27,15 @@ impl FingerprintMode {
     /// Build the fingerprint from the engines' ready responses and the
     /// deployment-wide data-parallel size, like Python's
     /// `build_system_fingerprint`.
+    /// The fingerprint of a server with no engine-core connection: the custom
+    /// value, else none, since the other modes describe an engine.
+    pub(crate) fn fingerprint_without_engine(&self) -> Option<String> {
+        match self {
+            Self::Custom(value) => Some(value.clone()),
+            Self::None | Self::Hash | Self::Full => None,
+        }
+    }
+
     pub(crate) fn fingerprint(
         &self,
         engines: &[&EngineCoreReadyResponse],

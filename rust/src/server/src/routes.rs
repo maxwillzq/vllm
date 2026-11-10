@@ -140,7 +140,6 @@ fn build_router_with_gates(state: Arc<AppState>, gates: RouteGates) -> Router {
         .route("/metrics", get(metrics::scrape))
         .route("/load", get(load::load))
         .route("/version", get(version::version))
-        .route("/kv_event_sources", get(kv_event_sources::kv_event_sources))
         // OpenAI-compatible endpoints
         .route("/v1/models", get(openai::list_models))
         .route("/v1/completions", post(openai::completions))
@@ -198,12 +197,21 @@ fn build_router_with_gates(state: Arc<AppState>, gates: RouteGates) -> Router {
         router = router.route("/tokenizer_info", get(not_supported));
     }
 
+    // Routes that talk to engine-core directly exist only when the server
+    // runs an `EngineCoreLlm`; a server built with `serve_with_llm` around
+    // another `Llm` leaves them out.
+    let engine_core = state.engine_core_llm().is_some();
+    if engine_core {
+        router = router.route("/kv_event_sources", get(kv_event_sources::kv_event_sources));
+    }
+
     // Process checkpoint lifecycle, which requires sleep mode.
-    if state
-        .engine_core_client()
-        .ready_responses()
-        .iter()
-        .all(|ready| ready.enable_sleep_mode)
+    if engine_core
+        && state
+            .engine_core_client()
+            .ready_responses()
+            .iter()
+            .all(|ready| ready.enable_sleep_mode)
     {
         router = router
             .route("/checkpoint/prepare", post(checkpoint::prepare))
@@ -211,13 +219,13 @@ fn build_router_with_gates(state: Arc<AppState>, gates: RouteGates) -> Router {
             .route("/checkpoint/status", get(checkpoint::status));
     }
 
-    if gates.runtime_lora_updating {
+    if engine_core && gates.runtime_lora_updating {
         router = router
             .route("/v1/load_lora_adapter", post(lora::load_lora_adapter))
             .route("/v1/unload_lora_adapter", post(lora::unload_lora_adapter));
     }
 
-    if gates.dev_mode {
+    if engine_core && gates.dev_mode {
         // Development-only
         router = router
             .route("/reset_prefix_cache", post(cache::reset_prefix_cache))
@@ -266,7 +274,7 @@ fn build_router_with_gates(state: Arc<AppState>, gates: RouteGates) -> Router {
             .route("/get_world_size", get(world_size::get_world_size))
     }
 
-    if let Some(profiler) = &state.profiler {
+    if let Some(profiler) = state.profiler.as_ref().filter(|_| engine_core) {
         warn!(
             mode = profiler,
             "profiler is enabled in the API server; \
