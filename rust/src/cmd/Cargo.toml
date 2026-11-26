@@ -32,6 +32,7 @@ vllm-bench.workspace = true
 vllm-build-info.workspace = true
 vllm-chat.workspace = true
 vllm-engine-core-client.workspace = true
+vllm-frontend-args.workspace = true
 vllm-managed-engine.workspace = true
 vllm-server.workspace = true
 vllm-text.workspace = true

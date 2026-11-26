@@ -1,0 +1,25 @@
+[package]
+name = "vllm-frontend-args"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Arguments of vLLM's Rust OpenAI frontend, shared by vllm-rs and embedding servers"
+
+[dependencies]
+clap.workspace = true
+educe.workspace = true
+itertools.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_path_to_error.workspace = true
+serde_with.workspace = true
+thiserror-ext.workspace = true
+tracing.workspace = true
+vllm-chat.workspace = true
+vllm-engine-core-client.workspace = true
+vllm-server.workspace = true
+vllm-text.workspace = true
+vllm-tracing.workspace = true
+
+[lints]
+workspace = true

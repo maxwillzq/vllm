@@ -5695,6 +5695,7 @@ dependencies = [
  "vllm-build-info",
  "vllm-chat",
  "vllm-engine-core-client",
+ "vllm-frontend-args",
  "vllm-managed-engine",
  "vllm-server",
  "vllm-text",
@@ -5740,6 +5741,26 @@ dependencies = [
  "tracing-subscriber",
  "vllm-metrics",
  "zeromq",
+]
+
+[[package]]
+name = "vllm-frontend-args"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "educe",
+ "itertools 0.14.0",
+ "serde",
+ "serde_json",
+ "serde_path_to_error",
+ "serde_with",
+ "thiserror-ext",
+ "tracing",
+ "vllm-chat",
+ "vllm-engine-core-client",
+ "vllm-server",
+ "vllm-text",
+ "vllm-tracing",
 ]
 
 [[package]]

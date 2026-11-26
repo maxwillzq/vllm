@@ -104,7 +104,7 @@ impl UnsupportedArgs {
     /// Check whether any unsupported arguments are set, and if so, return an
     /// error listing them. Also warn about any no-op arguments that are set
     /// but will be ignored.
-    pub(crate) fn check(&self) -> Result<(), String> {
+    pub fn check(&self) -> Result<(), String> {
         let value = serde_json::to_value(self).unwrap();
         let map = value.as_object().unwrap();
         let mut unsupported = Vec::new();
