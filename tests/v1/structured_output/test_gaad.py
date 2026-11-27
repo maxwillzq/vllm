@@ -125,6 +125,7 @@ def test_manager_plan_spec_tokens_and_one_hot_bitmask():
             backend="xgrammar",
             enable_grammar_drafter=True,
         ),
+        speculative_config=SimpleNamespace(method="grammar"),
         parallel_config=SimpleNamespace(distributed_executor_backend="mp"),
         scheduler_config=SimpleNamespace(max_num_seqs=4),
         model_config=SimpleNamespace(
@@ -217,4 +218,4 @@ def test_structured_outputs_config_and_grammar_speculator():
     )
     assert drafts.shape == (3, 4)
     assert drafts.dtype == torch.int64
-    assert torch.all(drafts == -1)
+    assert torch.all(drafts == 0)

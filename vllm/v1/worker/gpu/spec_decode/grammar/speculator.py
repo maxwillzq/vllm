@@ -30,9 +30,10 @@ class GrammarSpeculator(BaseSpeculator):
         num_spec_tokens = vllm_config.speculative_config.num_speculative_tokens
         assert num_spec_tokens is not None
         max_num_reqs = vllm_config.scheduler_config.max_num_seqs
-        self.drafts = torch.full(
+        # Use valid token ID 0 (not -1) so warmup/embedding passes never hit
+        # out-of-bounds device asserts; host-side GaaD overwrites real drafts.
+        self.drafts = torch.zeros(
             (max_num_reqs, num_spec_tokens),
-            -1,
             dtype=torch.int64,
             device=device,
         )

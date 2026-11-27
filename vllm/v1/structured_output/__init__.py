@@ -116,6 +116,10 @@ class StructuredOutputManager:
         self.enable_grammar_drafter = (
             self.vllm_config.structured_outputs_config.enable_grammar_drafter
         )
+        self._standalone_grammar_drafter = (
+            self.vllm_config.speculative_config is not None
+            and self.vllm_config.speculative_config.method == "grammar"
+        )
         self._gaad_forced_flags: dict[str, list[bool]] = {}
 
     def _get_reasoner(self, request: "Request") -> "ReasoningParser | None":
@@ -374,7 +378,11 @@ class StructuredOutputManager:
             self._gaad_forced_flags.pop(request.request_id, None)
             return self.trim_spec_tokens(request, spec_tokens)
 
-        spec_tokens = strip_speculative_padding(spec_tokens)
+        spec_tokens = (
+            []
+            if self._standalone_grammar_drafter
+            else strip_speculative_padding(spec_tokens)
+        )
         grammar_start, _ = self._get_constraint_bounds(request, spec_tokens)
         if grammar_start > len(spec_tokens):
             self._gaad_forced_flags.pop(request.request_id, None)
