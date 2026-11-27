@@ -19,6 +19,7 @@ from vllm.v1.structured_output.backend_types import (
     StructuredOutputGrammar,
 )
 from vllm.v1.structured_output.backend_xgrammar import XgrammarBackend
+from vllm.v1.structured_output.gaad import plan_gaad_draft_tokens
 from vllm.v1.structured_output.utils import (
     allocate_token_bitmask,
     strip_speculative_padding,
@@ -112,6 +113,10 @@ class StructuredOutputManager:
         self.enable_in_reasoning = (
             self.vllm_config.structured_outputs_config.enable_in_reasoning
         )
+        self.enable_grammar_drafter = (
+            self.vllm_config.structured_outputs_config.enable_grammar_drafter
+        )
+        self._gaad_forced_flags: dict[str, list[bool]] = {}
 
     def _get_reasoner(self, request: "Request") -> "ReasoningParser | None":
         structured_req = request.structured_output_request
@@ -350,6 +355,66 @@ class StructuredOutputManager:
         len_validated = len(grammar.validate_tokens(spec_tokens[grammar_start:]))
         return prefix + spec_tokens[grammar_start : grammar_start + len_validated + 1]
 
+    def clear_request_state(self, request_id: str) -> None:
+        """Drop per-request GaaD planner state when a request finishes or aborts."""
+        self._gaad_forced_flags.pop(request_id, None)
+
+    def plan_spec_tokens(
+        self,
+        request: "Request",
+        spec_tokens: list[int],
+        max_num_spec_tokens: int,
+    ) -> list[int]:
+        """Plan speculative tokens with Grammar-as-a-Drafter when enabled.
+
+        Falls back to `trim_spec_tokens` when `enable_grammar_drafter` is False
+        or the request has no structured output constraint.
+        """
+        if not self.enable_grammar_drafter or not request.use_structured_output:
+            self._gaad_forced_flags.pop(request.request_id, None)
+            return self.trim_spec_tokens(request, spec_tokens)
+
+        spec_tokens = strip_speculative_padding(spec_tokens)
+        grammar_start, _ = self._get_constraint_bounds(request, spec_tokens)
+        if grammar_start > len(spec_tokens):
+            self._gaad_forced_flags.pop(request.request_id, None)
+            return spec_tokens
+
+        structured_req = request.structured_output_request
+        if TYPE_CHECKING:
+            assert structured_req is not None
+        grammar = structured_req.grammar
+        if TYPE_CHECKING:
+            assert isinstance(grammar, StructuredOutputGrammar)
+        if grammar.is_terminated():
+            self._gaad_forced_flags.pop(request.request_id, None)
+            return spec_tokens[:grammar_start]
+
+        budget = max_num_spec_tokens - grammar_start
+        if budget <= 0:
+            self._gaad_forced_flags.pop(request.request_id, None)
+            return spec_tokens[:max_num_spec_tokens]
+
+        prefix = spec_tokens[:grammar_start]
+        planned, forced_flags = plan_gaad_draft_tokens(
+            grammar, spec_tokens[grammar_start:], budget
+        )
+        if any(forced_flags):
+            self._gaad_forced_flags[request.request_id] = [
+                False
+            ] * grammar_start + forced_flags
+        else:
+            self._gaad_forced_flags.pop(request.request_id, None)
+        return prefix + planned
+
+    def _fill_one_hot_bitmask(self, index: int, token_id: int) -> None:
+        """Allow only `token_id` in row `index` for a GaaD grammar-forced slot."""
+        assert self._grammar_bitmask is not None
+        row = self._grammar_bitmask[index]
+        row.zero_()
+        row_u32 = row.numpy().view(np.uint32)
+        row_u32[token_id >> 5] = np.uint32(1 << (token_id & 31))
+
     def grammar_bitmask(
         self,
         requests: dict[str, "Request"],
@@ -449,6 +514,11 @@ class StructuredOutputManager:
 
                 state_advancements = 0
                 padding_or_grammar_invalid = False
+                forced_flags = (
+                    self._gaad_forced_flags.get(req_id)
+                    if self.enable_grammar_drafter
+                    else None
+                )
                 for i, token in enumerate(tokens_to_mask):
                     if padding_or_grammar_invalid:
                         self._fill_bitmasks(((grammar, base_index + i, False, ()),))
@@ -456,9 +526,20 @@ class StructuredOutputManager:
 
                     apply_bitmask = i >= constraint_start
                     row_masked = masked_ids if i < constraint_start else ()
-                    self._fill_bitmasks(
-                        ((grammar, base_index + i, apply_bitmask, row_masked),)
+                    is_forced_slot = (
+                        apply_bitmask
+                        and forced_flags is not None
+                        and i < len(forced_flags)
+                        and forced_flags[i]
+                        and token != -1
+                        and not grammar.is_terminated()
                     )
+                    if is_forced_slot:
+                        self._fill_one_hot_bitmask(base_index + i, token)
+                    else:
+                        self._fill_bitmasks(
+                            ((grammar, base_index + i, apply_bitmask, row_masked),)
+                        )
                     if token == -1:
                         padding_or_grammar_invalid = True
                     elif i >= grammar_start:

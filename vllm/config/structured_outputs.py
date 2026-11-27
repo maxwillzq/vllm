@@ -36,6 +36,12 @@ class StructuredOutputsConfig:
     loaded and registered."""
     enable_in_reasoning: bool = False
     """Whether to use structured input for reasoning."""
+    enable_grammar_drafter: bool = False
+    """If `True`, enables Grammar-as-a-Drafter (GaaD): uses deterministic
+    grammar jump-forward tokens to promote matching model drafts and fill
+    remaining speculative decoding slots. Requires `speculative_config`
+    (either `method="grammar"` for standalone GaaD or a model drafter such
+    as `mtp` or `eagle` for hybrid drafting) and the `xgrammar` backend."""
 
     def compile_factors(self) -> CompileFactors:
         """This config does not affect the compiled graph.
@@ -57,5 +63,9 @@ class StructuredOutputsConfig:
             raise ValueError(
                 "disable_additional_properties is only supported "
                 "for the guidance backend."
+            )
+        if self.enable_grammar_drafter and self.backend not in ("auto", "xgrammar"):
+            raise ValueError(
+                "enable_grammar_drafter is only supported for the xgrammar backend."
             )
         return self

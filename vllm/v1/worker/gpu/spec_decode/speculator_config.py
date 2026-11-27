@@ -364,6 +364,7 @@ _CONFIG_BY_METHOD: dict[str, str] = {
     "ngram": _builtin("ngram.config", "NgramSpeculatorConfig"),
     "ngram_gpu": _builtin("ngram.config", "NgramGPUSpeculatorConfig"),
     "suffix": _builtin("suffix.config", "SuffixSpeculatorConfig"),
+    "grammar": _builtin("grammar.config", "GrammarSpeculatorConfig"),
     "eagle": _builtin("eagle.config", "EagleSpeculatorConfig"),
     "eagle3": _builtin("eagle.config", "Eagle3SpeculatorConfig"),
     "mtp": _builtin("mtp.config", "MTPSpeculatorConfig"),

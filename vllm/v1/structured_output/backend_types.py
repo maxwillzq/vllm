@@ -94,6 +94,20 @@ class StructuredOutputGrammar(ABC):
     def reset(self):
         """Resets the state of the structured output grammar."""
 
+    def find_jump_forward_tokens(self, max_tokens: int) -> list[int]:
+        """Returns up to `max_tokens` deterministically forced tokens at the
+        current grammar state without advancing the FSM.
+
+        Backends that do not support jump-forward decoding return an empty list.
+
+        Args:
+            max_tokens: Maximum number of forced tokens to return.
+
+        Returns:
+            Validated jump-forward token IDs, or an empty list when none exist.
+        """
+        return []
+
 
 @dataclass
 class StructuredOutputBackend(ABC):
