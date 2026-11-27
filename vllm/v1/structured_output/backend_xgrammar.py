@@ -115,6 +115,9 @@ class XgrammarBackend(StructuredOutputBackend):
             self.num_speculative_tokens = (
                 self.vllm_config.speculative_config.num_speculative_tokens
             )
+        self.enable_grammar_drafter = (
+            self.vllm_config.structured_outputs_config.enable_grammar_drafter
+        )
 
     def compile_grammar(
         self,
@@ -184,14 +187,20 @@ class XgrammarBackend(StructuredOutputBackend):
                 f"grammar is not of valid supported types. ({request_type!s})"
             )
 
+        max_rollback_tokens = (
+            max(self.num_speculative_tokens, 1) * 2
+            if self.enable_grammar_drafter
+            else self.num_speculative_tokens
+        )
         return XgrammarGrammar(
             matcher=xgr.GrammarMatcher(
                 ctx,
                 override_stop_tokens=list(stop_token_ids) if stop_token_ids else None,
-                max_rollback_tokens=self.num_speculative_tokens,
+                max_rollback_tokens=max_rollback_tokens,
             ),
             vocab_size=self.vocab_size,
             ctx=ctx,
+            tokenizer=self.tokenizer,
         )
 
     def destroy(self):
@@ -242,6 +251,7 @@ class XgrammarGrammar(StructuredOutputGrammar):
     vocab_size: int
     matcher: xgr.GrammarMatcher = field(hash=False)
     ctx: xgr.CompiledGrammar = field(hash=False)
+    tokenizer: Any = field(default=None, repr=False, hash=False)
     num_processed_tokens: int = field(
         default_factory=lambda: 0, repr=False, hash=False, init=False
     )
@@ -306,6 +316,30 @@ class XgrammarGrammar(StructuredOutputGrammar):
         self.matcher.reset()
         self.num_processed_tokens = 0
         self._is_terminated = False
+
+    def find_jump_forward_tokens(self, max_tokens: int) -> list[int]:
+        if self._is_terminated or max_tokens <= 0 or self.tokenizer is None:
+            return []
+        jump_str = self.matcher.find_jump_forward_string()
+        if not jump_str:
+            return []
+        tokens = self.tokenizer.encode(jump_str, add_special_tokens=False)
+        if not tokens:
+            return []
+        # All-or-nothing canonical boundary check: every encoded token must be
+        # accepted in sequence before returning the prefix.
+        accepted = 0
+        valid = True
+        for tok in tokens:
+            if tok < 0 or tok >= self.vocab_size or not self.matcher.accept_token(tok):
+                valid = False
+                break
+            accepted += 1
+        if accepted > 0:
+            self.matcher.rollback(accepted)
+        if not valid:
+            return []
+        return list(tokens[:max_tokens])
 
 
 # cf https://github.com/mlc-ai/xgrammar/blob/a32ac892676d2eedc0327416105b9b06edfb94b2/cpp/json_schema_converter.cc

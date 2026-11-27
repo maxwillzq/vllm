@@ -1887,6 +1887,7 @@ class Scheduler(SchedulerInterface):
         )
         if self.aux_output_connector is not None:
             self.aux_output_connector.request_finished(request)
+        self.structured_output_manager.clear_request_state(request.request_id)
         self._free_request_blocks(request)
         self.encoder_cache_manager.free(request)
         self._pending_encoder_input_ids.pop(request.request_id, None)
@@ -3149,8 +3150,8 @@ class Scheduler(SchedulerInterface):
                 continue
 
             # Add newly generated spec token ids to the request.
-            request.spec_token_ids = self.structured_output_manager.trim_spec_tokens(
-                request, spec_token_ids
+            request.spec_token_ids = self.structured_output_manager.plan_spec_tokens(
+                request, spec_token_ids, self.num_spec_tokens
             )
 
     def update_draft_token_ids_in_output(
@@ -3311,6 +3312,7 @@ class Scheduler(SchedulerInterface):
 
         if self.aux_output_connector is not None:
             self.aux_output_connector.request_finished(request)
+        self.structured_output_manager.clear_request_state(request.request_id)
         self._inflight_prefills.discard(request)
         self._unreserve_parked(request)
         self._set_kv_fetch_stage(request, None)

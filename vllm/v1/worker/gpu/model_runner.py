@@ -1611,6 +1611,24 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         )
         seq_lens = self.input_buffers.seq_lens[:num_reqs_padded]
 
+        if (
+            self.vllm_config.structured_outputs_config.enable_grammar_drafter
+            and draft_tokens
+        ):
+            # Sync host-planned GaaD draft tokens into the GPU draft buffer
+            # before combine_sampled_and_draft_tokens reads them.
+            host_drafts = np.zeros(
+                (num_reqs, self.num_speculative_steps), dtype=np.int64
+            )
+            for i, req_id in enumerate(req_ids):
+                toks = draft_tokens.get(req_id)
+                if toks:
+                    n = min(len(toks), self.num_speculative_steps)
+                    host_drafts[i, :n] = toks[:n]
+            self.req_states.draft_tokens[idx_mapping] = async_tensor_h2d(
+                host_drafts, device=self.device, dtype=torch.int64
+            )
+
         # Some input token ids are directly read from the last sampled tokens
         # and draft tokens. Also, get the logits indices to sample tokens from.
         logits_indices = combine_sampled_and_draft_tokens(

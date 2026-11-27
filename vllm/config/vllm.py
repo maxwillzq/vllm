@@ -1785,8 +1785,32 @@ class VllmConfig:
             and self.parallel_config.all2all_backend == "deepep_high_throughput"
         )
 
+        if (
+            self.speculative_config is not None
+            and self.speculative_config.method == "grammar"
+        ):
+            self.structured_outputs_config.enable_grammar_drafter = True
+        if (
+            self.structured_outputs_config.enable_grammar_drafter
+            and self.speculative_config is None
+        ):
+            raise ValueError(
+                "structured_outputs_config.enable_grammar_drafter requires "
+                "speculative_config (e.g. method='grammar' for standalone "
+                "Grammar-as-a-Drafter, or a model drafter such as 'mtp' or "
+                "'eagle' for hybrid drafting)."
+            )
+
+        uses_grammar_drafter = self.structured_outputs_config.enable_grammar_drafter
+
         if self.scheduler_config.async_scheduling:
             # Async scheduling explicitly enabled, hard fail any incompatibilities.
+            if uses_grammar_drafter:
+                raise ValueError(
+                    "Async scheduling is not compatible with "
+                    "enable_grammar_drafter / method='grammar'. "
+                    "Please pass --no-async-scheduling."
+                )
             if uses_rocm_deepep_ht_dbo:
                 raise ValueError(
                     "Async scheduling is not compatible with ROCm DeepEP "
@@ -1814,6 +1838,13 @@ class VllmConfig:
                     "Async scheduling will be disabled because it is not supported "
                     "with the `%s` distributed executor backend. ",
                     executor_backend,
+                )
+                self.scheduler_config.async_scheduling = False
+            elif uses_grammar_drafter:
+                logger.info_once(
+                    "Disabling async scheduling by default because "
+                    "enable_grammar_drafter requires committed grammar states "
+                    "before proposing jump-forward draft tokens."
                 )
                 self.scheduler_config.async_scheduling = False
             elif uses_rocm_deepep_ht_dbo:

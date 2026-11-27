@@ -115,6 +115,7 @@ SpeculativeMethod = Literal[
     "draft_model",
     "dfly",
     "suffix",
+    "grammar",
     EagleModelTypes,
     NgramGPUTypes,
     DSparkModelTypes,
